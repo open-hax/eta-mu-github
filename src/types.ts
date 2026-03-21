@@ -8,6 +8,11 @@ export interface EtaMuConfig {
   readonly mentionTokens: readonly string[];
   readonly ignoreLogins: readonly string[];
   readonly appLogin: string;
+  readonly reviewCheckName: string;
+  readonly stateCommentMarker: string;
+  readonly autofixCommentMarker: string;
+  readonly commitAuthorName: string;
+  readonly commitAuthorEmail: string;
   readonly modelProvider?: string;
   readonly modelId?: string;
 }
@@ -47,6 +52,12 @@ export interface EventCommentContext {
   readonly authorLogin?: string;
 }
 
+export interface PullRequestRefContext {
+  readonly repoFullName?: string;
+  readonly ref?: string;
+  readonly sha?: string;
+}
+
 export interface GitHubEventContext {
   readonly repo: RepoSlug;
   readonly trigger: EtaMuTrigger;
@@ -59,6 +70,8 @@ export interface GitHubEventContext {
   readonly pullRequestBody?: string;
   readonly pullRequestUrl?: string;
   readonly pullRequestFiles?: readonly string[];
+  readonly pullRequestHead?: PullRequestRefContext;
+  readonly pullRequestBase?: PullRequestRefContext;
   readonly comment?: EventCommentContext;
   readonly reviewSummary?: string;
   readonly unresolvedReviewThreads?: readonly ReviewThreadSummary[];
@@ -66,6 +79,15 @@ export interface GitHubEventContext {
 
 export interface EtaMuAgentDecision {
   readonly shouldRespond: boolean;
-  readonly mode: "reply" | "upsert-state" | "noop";
+  readonly mode: "reply" | "upsert-state" | "autofix" | "noop";
   readonly body: string;
+}
+
+export interface AutofixResult {
+  readonly applied: boolean;
+  readonly pushed: boolean;
+  readonly reason: string;
+  readonly changedFiles: readonly string[];
+  readonly commitSha?: string;
+  readonly summary: string;
 }

@@ -11,9 +11,14 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  checks: write
+
+concurrency:
+  group: eta-mu-review-gate-${{ github.repository }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
-  coderabbit-review-gate:
+  sync-eta-mu-review-gate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout target repository
@@ -24,6 +29,14 @@ jobs:
         with:
           repository: open-hax/eta-mu-github
           path: .eta-mu
+
+      - name: Create eta-mu app token
+        id: eta_mu_token
+        if: ${{ secrets.ETA_MU_APP_ID != '' && secrets.ETA_MU_APP_PRIVATE_KEY != '' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.ETA_MU_APP_ID }}
+          private-key: ${{ secrets.ETA_MU_APP_PRIVATE_KEY }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -40,11 +53,14 @@ jobs:
       - name: Install eta-mu dependencies
         run: pnpm --dir .eta-mu install --frozen-lockfile
 
-      - name: Enforce review-thread resolution for configured actors
+      - name: Publish eta-mu review gate status
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.eta_mu_token.outputs.token != '' && steps.eta_mu_token.outputs.token || github.token }}
           ETA_MU_REVIEW_ACTORS: ${{ vars.ETA_MU_REVIEW_ACTORS }}
+          ETA_MU_REVIEW_CHECK_NAME: ${{ vars.ETA_MU_REVIEW_CHECK_NAME }}
         run: >-
           pnpm --dir .eta-mu dev review-gate
           --repo "${GITHUB_REPOSITORY}"
           --pr "${{ github.event.pull_request.number }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+          --publish-check

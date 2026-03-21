@@ -13,16 +13,17 @@ on:
     types: [created]
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
+  checks: write
 
 concurrency:
   group: eta-mu-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  eta-mu:
+  eta-mu-event-runner:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout target repository
@@ -69,6 +70,7 @@ jobs:
           ETA_MU_REVIEW_ACTORS: ${{ vars.ETA_MU_REVIEW_ACTORS }}
           ETA_MU_MENTION_TOKENS: ${{ vars.ETA_MU_MENTION_TOKENS }}
           ETA_MU_IGNORE_LOGINS: ${{ vars.ETA_MU_IGNORE_LOGINS }}
+          ETA_MU_REVIEW_CHECK_NAME: ${{ vars.ETA_MU_REVIEW_CHECK_NAME }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
