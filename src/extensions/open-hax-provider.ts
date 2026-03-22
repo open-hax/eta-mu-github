@@ -6,13 +6,13 @@
  *
  * Required env vars:
  * - OPEN_HAX_OPENAI_PROXY_URL: Base URL for Open Hax proxy (default: http://127.0.0.1:8789)
- * - OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN: Auth token for Open Hax proxy
+ * - OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN: Auth token for Open Hax proxy (or OPEN_HAX_PROXY_AUTH_TOKEN, OPEN_HAX_AUTH_TOKEN)
  *
  * Providers registered:
- * - open-hax: OpenAI Responses API compatible
- * - open-hax-responses: OpenAI Responses API compatible
+ * - open-hax: OpenAI Completions API compatible (includes glm-5)
  * - open-hax-completions: OpenAI Completions API compatible (includes glm-5)
- * - open-hax-compat: OpenAI Completions API compatible (compat models)
+ * - open-hax-compat: OpenAI Completions API compatible (compat models: glm-5, gemini)
+ * - open-hax-responses: OpenAI Responses API compatible
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -64,24 +64,22 @@ export default function (pi: ExtensionAPI): void {
     "";
 
   if (!authToken) {
-    console.warn("[open-hax-provider] No auth token configured. Set OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN.");
+    console.warn("[open-hax-provider] No auth token configured. Set one of: OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN, OPEN_HAX_PROXY_AUTH_TOKEN, OPEN_HAX_AUTH_TOKEN.");
   }
 
-  // Primary provider - OpenAI Completions API (includes glm-5 for compatibility)
-  pi.registerProvider("open-hax", {
+  // Shared config for open-hax and open-hax-completions providers
+  const openHaxConfig = {
     baseUrl: apiBaseUrl,
     apiKey: authToken,
-    api: "openai-completions",
+    api: "openai-completions" as const,
     models: [...GPT_5_MODELS, GLM_5_MODEL],
-  });
+  };
+
+  // Primary provider - OpenAI Completions API (includes glm-5 for compatibility)
+  pi.registerProvider("open-hax", openHaxConfig);
 
   // Completions API variant (includes glm-5)
-  pi.registerProvider("open-hax-completions", {
-    baseUrl: apiBaseUrl,
-    apiKey: authToken,
-    api: "openai-completions",
-    models: [...GPT_5_MODELS, GLM_5_MODEL],
-  });
+  pi.registerProvider("open-hax-completions", openHaxConfig);
 
   // Compat variant for models like glm-5, gemini, etc.
   pi.registerProvider("open-hax-compat", {

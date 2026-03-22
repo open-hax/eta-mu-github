@@ -70,9 +70,16 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
 
   // Now try to find the model - the extension will have registered the providers
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
+  
+  // If explicit provider/model was requested but not found, error immediately
+  if (provider && modelId && !explicitModel) {
+    throw new Error(`Model "${modelId}" not found for provider "${provider}". Available providers: open-hax, open-hax-completions, open-hax-compat, open-hax-responses.`);
+  }
+  
+  // If no explicit model, fall back to first available
   const model = explicitModel ?? modelRegistry.getAvailable()[0];
   if (!model) {
-    throw new Error("No authenticated pi model is available for eta-mu. Ensure OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN is set.");
+    throw new Error("No authenticated pi model is available for eta-mu. Set one of: OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN, OPEN_HAX_PROXY_AUTH_TOKEN, or OPEN_HAX_AUTH_TOKEN.");
   }
 
   const resourceLoader: ResourceLoader = {
