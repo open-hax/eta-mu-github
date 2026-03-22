@@ -3,11 +3,12 @@ import {
   createAgentSession,
   createExtensionRuntime,
   createEventBus,
-  loadExtensionFromFactory,
   ModelRegistry,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
+  type ExtensionAPI,
+  type ExecResult,
 } from "@mariozechner/pi-coding-agent";
 import openHaxProvider from "./extensions/open-hax-provider.js";
 
@@ -24,12 +25,43 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
 
-  // Create the extension runtime and load the open-hax provider extension
+  // Create the extension runtime
   const extensionRuntime = createExtensionRuntime();
-  const eventBus = createEventBus();
 
-  // Load the open-hax provider extension using the proper factory loader
-  const extension = await loadExtensionFromFactory(openHaxProvider, cwd, eventBus, extensionRuntime);
+  // Create a minimal ExtensionAPI that delegates to the runtime's registerProvider
+  const pi: ExtensionAPI = {
+    on: () => {},
+    registerTool: () => {},
+    registerCommand: () => {},
+    registerShortcut: () => {},
+    registerFlag: () => {},
+    registerMessageRenderer: () => {},
+    registerProvider: (name, config) => {
+      extensionRuntime.registerProvider(name, config);
+    },
+    unregisterProvider: (name) => {
+      extensionRuntime.unregisterProvider(name);
+    },
+    getFlag: () => undefined,
+    sendMessage: () => {},
+    sendUserMessage: () => {},
+    appendEntry: () => {},
+    setSessionName: () => {},
+    getSessionName: () => undefined,
+    setLabel: () => {},
+    getActiveTools: () => [],
+    getAllTools: () => [],
+    setActiveTools: () => {},
+    getCommands: () => [],
+    setModel: () => Promise.resolve(false),
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    exec: () => Promise.resolve({ cwd: "", exitCode: 1, code: 1, killed: false, stdout: "", stderr: "exec not available in eta-mu context" } as ExecResult),
+    events: createEventBus(),
+  };
+
+  // Load the open-hax provider extension
+  openHaxProvider(pi);
 
   // Register providers from the extension's pending registrations
   for (const { name, config } of extensionRuntime.pendingProviderRegistrations) {
@@ -44,7 +76,7 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   }
 
   const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [extension], errors: [], runtime: extensionRuntime }),
+    getExtensions: () => ({ extensions: [], errors: [], runtime: extensionRuntime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
