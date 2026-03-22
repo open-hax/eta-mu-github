@@ -22,7 +22,6 @@ const GLM_5_MODEL = {
   name: "GLM 5",
   reasoning: false,
   input: ["text"] as const,
-  output: ["text"] as const,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow: 131072,
   maxTokens: 16384,
@@ -34,7 +33,6 @@ const GPT_5_MODELS = [
     name: "GPT 5.4",
     reasoning: true,
     input: ["text", "image"] as const,
-    output: ["text"] as const,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 800000,
     maxTokens: 128000,
@@ -44,7 +42,6 @@ const GPT_5_MODELS = [
     name: "GPT 5.2",
     reasoning: true,
     input: ["text", "image"] as const,
-    output: ["text"] as const,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 272000,
     maxTokens: 128000,
@@ -70,7 +67,7 @@ export default function (pi: ExtensionAPI): void {
     console.warn("[open-hax-provider] No auth token configured. Set OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN.");
   }
 
-  // Primary provider - OpenAI Responses API (includes glm-5 for compatibility)
+  // Primary provider - OpenAI Completions API (includes glm-5 for compatibility)
   pi.registerProvider("open-hax", {
     baseUrl: apiBaseUrl,
     apiKey: authToken,
@@ -98,7 +95,6 @@ export default function (pi: ExtensionAPI): void {
         name: "Gemini 2.5 Flash",
         reasoning: false,
         input: ["text", "image"] as const,
-        output: ["text"] as const,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 1048576,
         maxTokens: 65536,
@@ -108,7 +104,6 @@ export default function (pi: ExtensionAPI): void {
         name: "Gemini 2.5 Pro",
         reasoning: false,
         input: ["text", "image"] as const,
-        output: ["text"] as const,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 1048576,
         maxTokens: 65536,

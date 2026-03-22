@@ -2,6 +2,8 @@ import {
   AuthStorage,
   createAgentSession,
   createExtensionRuntime,
+  createEventBus,
+  loadExtensionFromFactory,
   ModelRegistry,
   type ResourceLoader,
   SessionManager,
@@ -22,11 +24,17 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
 
-  // Create the extension runtime and register the open-hax provider
+  // Create the extension runtime and load the open-hax provider extension
   const extensionRuntime = createExtensionRuntime();
+  const eventBus = createEventBus();
 
-  // Register the open-hax provider extension
-  extensionRuntime.registerExtension(openHaxProvider);
+  // Load the open-hax provider extension using the proper factory loader
+  const extension = await loadExtensionFromFactory(openHaxProvider, cwd, eventBus, extensionRuntime);
+
+  // Register providers from the extension's pending registrations
+  for (const { name, config } of extensionRuntime.pendingProviderRegistrations) {
+    modelRegistry.registerProvider(name, config);
+  }
 
   // Now try to find the model - the extension will have registered the providers
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
@@ -36,7 +44,7 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   }
 
   const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: extensionRuntime }),
+    getExtensions: () => ({ extensions: [extension], errors: [], runtime: extensionRuntime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
