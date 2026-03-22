@@ -7,6 +7,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
+import openHaxProvider from "./extensions/open-hax-provider.js";
 
 const extractJson = (text: string): string => {
   const start = text.indexOf("{");
@@ -20,14 +21,22 @@ const extractJson = (text: string): string => {
 export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: string, provider?: string, modelId?: string): Promise<string> => {
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
+
+  // Create the extension runtime and register the open-hax provider
+  const extensionRuntime = createExtensionRuntime();
+
+  // Register the open-hax provider extension
+  extensionRuntime.registerExtension(openHaxProvider);
+
+  // Now try to find the model - the extension will have registered the providers
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
   const model = explicitModel ?? modelRegistry.getAvailable()[0];
   if (!model) {
-    throw new Error("No authenticated pi model is available for eta-mu");
+    throw new Error("No authenticated pi model is available for eta-mu. Ensure OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN is set.");
   }
 
   const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getExtensions: () => ({ extensions: [], errors: [], runtime: extensionRuntime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
