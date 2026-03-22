@@ -69,6 +69,14 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   }
 
   // Now try to find the model - the extension will have registered the providers
+  // Provider and modelId must be specified together; reject partial specification
+  if (provider && !modelId) {
+    throw new Error(`Provider "${provider}" specified but modelId is missing. Both provider and modelId must be specified together.`);
+  }
+  if (!provider && modelId) {
+    throw new Error(`Model "${modelId}" specified but provider is missing. Both provider and modelId must be specified together.`);
+  }
+  
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
   
   // If explicit provider/model was requested but not found, error immediately
