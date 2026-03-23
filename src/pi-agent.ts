@@ -6,11 +6,14 @@ import {
   createExtensionRuntime,
   createReadTool,
   createWriteTool,
+  discoverAndLoadExtensions,
   ModelRegistry,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
+import path from "node:path";
+import fs from "node:fs";
 
 const extractJson = (text: string): string => {
   const start = text.indexOf("{");
@@ -21,18 +24,67 @@ const extractJson = (text: string): string => {
   return text.slice(start, end + 1);
 };
 
-const createResourceLoader = (systemPrompt: string): ResourceLoader => ({
-  getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-  getSkills: () => ({ skills: [], diagnostics: [] }),
-  getPrompts: () => ({ prompts: [], diagnostics: [] }),
-  getThemes: () => ({ themes: [], diagnostics: [] }),
-  getAgentsFiles: () => ({ agentsFiles: [] }),
-  getSystemPrompt: () => systemPrompt,
-  getAppendSystemPrompt: () => [],
-  getPathMetadata: () => new Map(),
-  extendResources: () => {},
-  reload: async () => {},
-});
+const getAgentDir = (): string | undefined => {
+  const explicit = process.env.PI_CODING_AGENT_DIR;
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+  // Fallback: ~/.pi/agent
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (home) {
+    const defaultDir = path.join(home, ".pi", "agent");
+    if (fs.existsSync(defaultDir)) {
+      return defaultDir;
+    }
+  }
+  return undefined;
+};
+
+const createResourceLoader = async (
+  systemPrompt: string,
+  cwd: string,
+  modelRegistry: ModelRegistry,
+): Promise<ResourceLoader> => {
+  const agentDir = getAgentDir();
+
+  // Create runtime that can queue provider registrations
+  const runtime = createExtensionRuntime();
+
+  // Load extensions from agent directory
+  const { extensions, errors } = await discoverAndLoadExtensions(
+    [], // configuredPaths - we'll discover from agentDir
+    cwd,
+    agentDir,
+    undefined, // eventBus
+  );
+
+  if (errors.length > 0) {
+    for (const { path, error } of errors) {
+      console.error(`eta-mu extension error (${path}): ${error}`);
+    }
+  }
+
+  // Flush pending provider registrations to the ModelRegistry
+  // This connects extensions' pi.registerProvider() calls to the actual registry
+  const pending = runtime.pendingProviderRegistrations ?? [];
+  for (const { name, config } of pending) {
+    modelRegistry.registerProvider(name, config);
+  }
+  runtime.pendingProviderRegistrations = [];
+
+  return {
+    getExtensions: () => ({ extensions, errors, runtime }),
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => systemPrompt,
+    getAppendSystemPrompt: () => [],
+    getPathMetadata: () => new Map(),
+    extendResources: () => {},
+    reload: async () => {},
+  };
+};
 
 const selectModel = (modelRegistry: ModelRegistry, provider?: string, modelId?: string) => {
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
@@ -48,6 +100,11 @@ const createBaseSession = async (
 ) => {
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
+
+  // Load resource loader with extensions from PI_CODING_AGENT_DIR
+  // This also flushes pending provider registrations to the ModelRegistry
+  const resourceLoader = await createResourceLoader(systemPrompt, cwd, modelRegistry);
+
   const model = selectModel(modelRegistry, provider, modelId);
   if (!model) {
     throw new Error("No authenticated pi model is available for eta-mu");
@@ -64,7 +121,7 @@ const createBaseSession = async (
     thinkingLevel: tools.length > 0 ? "medium" : "low",
     authStorage,
     modelRegistry,
-    resourceLoader: createResourceLoader(systemPrompt),
+    resourceLoader,
     tools,
     sessionManager: SessionManager.inMemory(),
     settingsManager,
