@@ -21,6 +21,25 @@ jobs:
   sync-eta-mu-review-gate:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve eta-mu logic ref
+        id: eta_mu_ref
+        shell: bash
+        env:
+          ETA_MU_GITHUB_REF_MAIN: ${{ vars.ETA_MU_GITHUB_REF_MAIN }}
+          ETA_MU_GITHUB_REF_STAGING: ${{ vars.ETA_MU_GITHUB_REF_STAGING }}
+        run: |
+          target_branch="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == pull_request* ]]; then
+            target_branch="${GITHUB_BASE_REF}"
+          fi
+
+          logic_ref="${ETA_MU_GITHUB_REF_MAIN:-main}"
+          if [[ "$target_branch" == "staging" ]]; then
+            logic_ref="${ETA_MU_GITHUB_REF_STAGING:-staging}"
+          fi
+
+          echo "logic_ref=${logic_ref}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout target repository
         uses: actions/checkout@v4
 
@@ -29,6 +48,7 @@ jobs:
         with:
           repository: open-hax/eta-mu-github
           path: .eta-mu
+          ref: ${{ steps.eta_mu_ref.outputs.logic_ref }}
 
       - name: Create eta-mu app token
         id: eta_mu_token

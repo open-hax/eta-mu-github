@@ -47,6 +47,28 @@ Each target repository keeps a tiny local wrapper workflow that:
 
 This preserves stable, repo-local triggers while keeping the logic centralized in this repo.
 
+## Promotion model
+
+`eta-mu-github` itself should move through the same branch contract as other long-lived automation surfaces:
+
+- feature branch -> PR into `staging`
+- push to `staging` runs post-merge CI
+- PR from `staging` into `main`
+- push to `main` is the production logic ref consumed by target repositories
+
+Repo-local wrapper workflows can choose a staged eta-mu logic ref for staging-bound events via:
+
+- `ETA_MU_GITHUB_REF_STAGING`
+- `ETA_MU_GITHUB_REF_MAIN`
+- `ETA_MU_PI_REF_STAGING`
+- `ETA_MU_PI_REF_MAIN`
+
+Default behavior is:
+
+- staging-bound events -> `eta-mu-github@staging`
+- main/other events -> `eta-mu-github@main`
+- eta-mu-pi defaults to `main` unless an explicit staging ref is configured
+
 ## Verification
 
 ```bash
