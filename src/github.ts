@@ -1,5 +1,12 @@
 import { Octokit } from "@octokit/rest";
-import type { EventClassification, EventCommentContext, GitHubEventContext, RepoSlug, ReviewThreadSummary } from "./types.js";
+import type {
+  EventClassification,
+  EventCommentContext,
+  GitHubEventContext,
+  RepoSlug,
+  ReviewGateResult,
+  ReviewThreadSummary,
+} from "./types.js";
 
 interface GraphqlReviewThreadsResponse {
   repository?: {
@@ -26,6 +33,14 @@ interface GraphqlReviewThreadsResponse {
 const truncate = (value: string | undefined, limit = 500): string | undefined => {
   if (!value) return undefined;
   return value.length <= limit ? value : `${value.slice(0, limit)}…`;
+};
+
+const actionRunUrl = (): string | undefined => {
+  const server = process.env.GITHUB_SERVER_URL;
+  const repo = process.env.GITHUB_REPOSITORY;
+  const runId = process.env.GITHUB_RUN_ID;
+  if (!server || !repo || !runId) return undefined;
+  return `${server}/${repo}/actions/runs/${runId}`;
 };
 
 export const parseRepoSlug = (input: string): RepoSlug => {
@@ -153,6 +168,16 @@ export const fetchEventContext = async (
       issueBody: truncate(pull.data.body ?? undefined, 4000),
       issueUrl: pull.data.html_url,
       pullRequestFiles: await fetchPullRequestFiles(octokit, repo, classification.pullRequestNumber),
+      pullRequestHead: {
+        repoFullName: pull.data.head.repo?.full_name ?? undefined,
+        ref: pull.data.head.ref,
+        sha: pull.data.head.sha,
+      },
+      pullRequestBase: {
+        repoFullName: pull.data.base.repo?.full_name ?? undefined,
+        ref: pull.data.base.ref,
+        sha: pull.data.base.sha,
+      },
       reviewSummary: typeof (payload.review as { body?: unknown } | undefined)?.body === "string"
         ? (payload.review as { body?: string }).body
         : undefined,
@@ -216,4 +241,56 @@ export const upsertStickyComment = async (
     return;
   }
   await createIssueComment(octokit, repo, issueNumber, nextBody);
+};
+
+export const formatReviewGateOutput = (result: ReviewGateResult): { conclusion: "success" | "failure"; summary: string; text: string } => {
+  if (result.unresolvedThreads.length === 0) {
+    return {
+      conclusion: "success",
+      summary: `No unresolved review threads remain for tracked actors: ${result.trackedActors.join(", ") || "(none)"}.`,
+      text: "Eta-mu checked all review threads on this pull request and found no unresolved threads from tracked review actors.",
+    };
+  }
+
+  const details = result.unresolvedThreads
+    .slice(0, 20)
+    .map((thread, index) => {
+      const first = thread.comments[0];
+      const author = first?.authorLogin ?? "unknown";
+      const path = first?.path ? ` on ${first.path}` : "";
+      const url = first?.url ? `\n  ${first.url}` : "";
+      const body = first?.body ? `\n  ${truncate(first.body, 200)}` : "";
+      return `${index + 1}. ${author}${path}${body}${url}`;
+    })
+    .join("\n");
+
+  return {
+    conclusion: "failure",
+    summary: `Unresolved review threads remain for tracked actors: ${result.unresolvedThreads.length}.`,
+    text: `Eta-mu found ${result.unresolvedThreads.length} unresolved review thread(s) from tracked actors (${result.trackedActors.join(", ") || "none"}).\n\n${details}`,
+  };
+};
+
+export const publishCheckRun = async (
+  octokit: Octokit,
+  repo: RepoSlug,
+  headSha: string,
+  name: string,
+  output: { conclusion: "success" | "failure"; summary: string; text: string },
+): Promise<void> => {
+  await octokit.rest.checks.create({
+    owner: repo.owner,
+    repo: repo.name,
+    name,
+    head_sha: headSha,
+    status: "completed",
+    completed_at: new Date().toISOString(),
+    conclusion: output.conclusion,
+    details_url: actionRunUrl(),
+    output: {
+      title: name,
+      summary: output.summary,
+      text: output.text,
+    },
+  });
 };
