@@ -3,7 +3,6 @@ import {
   createAgentSession,
   createBashTool,
   createEditTool,
-  createExtensionRuntime,
   createReadTool,
   createWriteTool,
   discoverAndLoadExtensions,
@@ -11,9 +10,13 @@ import {
   type ResourceLoader,
   SessionManager,
   SettingsManager,
+  type ExtensionAPI,
+  type ExtensionRuntime,
+  type ProviderConfig,
 } from "@mariozechner/pi-coding-agent";
 import path from "node:path";
 import fs from "node:fs";
+import openHaxProvider from "./extensions/open-hax-provider.js";
 
 const extractJson = (text: string): string => {
   const start = text.indexOf("{");
@@ -40,6 +43,24 @@ const getAgentDir = (): string | undefined => {
   return undefined;
 };
 
+const registerBundledProviders = (runtime: ExtensionRuntime): void => {
+  const providerRegistrationApi = {
+    registerProvider: (name: string, config: ProviderConfig) => {
+      runtime.registerProvider(name, config);
+    },
+  } as unknown as ExtensionAPI;
+
+  openHaxProvider(providerRegistrationApi);
+};
+
+const flushProviderRegistrations = (runtime: ExtensionRuntime, modelRegistry: ModelRegistry): void => {
+  const pending = runtime.pendingProviderRegistrations ?? [];
+  for (const { name, config } of pending) {
+    modelRegistry.registerProvider(name, config);
+  }
+  runtime.pendingProviderRegistrations = [];
+};
+
 const createResourceLoader = async (
   systemPrompt: string,
   cwd: string,
@@ -47,16 +68,16 @@ const createResourceLoader = async (
 ): Promise<ResourceLoader> => {
   const agentDir = getAgentDir();
 
-  // Create runtime that can queue provider registrations
-  const runtime = createExtensionRuntime();
-
-  // Load extensions from agent directory
-  const { extensions, errors } = await discoverAndLoadExtensions(
-    [], // configuredPaths - we'll discover from agentDir
+  // Load extensions from the configured/global agent directory. The returned
+  // runtime queues provider registrations until we can flush them into the
+  // concrete ModelRegistry used by this GitHub automation session.
+  const extensionsResult = await discoverAndLoadExtensions(
+    [],
     cwd,
     agentDir,
-    undefined, // eventBus
+    undefined,
   );
+  const { extensions, errors, runtime } = extensionsResult;
 
   if (errors.length > 0) {
     for (const { path, error } of errors) {
@@ -64,13 +85,8 @@ const createResourceLoader = async (
     }
   }
 
-  // Flush pending provider registrations to the ModelRegistry
-  // This connects extensions' pi.registerProvider() calls to the actual registry
-  const pending = runtime.pendingProviderRegistrations ?? [];
-  for (const { name, config } of pending) {
-    modelRegistry.registerProvider(name, config);
-  }
-  runtime.pendingProviderRegistrations = [];
+  registerBundledProviders(runtime);
+  flushProviderRegistrations(runtime, modelRegistry);
 
   return {
     getExtensions: () => ({ extensions, errors, runtime }),
@@ -87,7 +103,18 @@ const createResourceLoader = async (
 };
 
 const selectModel = (modelRegistry: ModelRegistry, provider?: string, modelId?: string) => {
+  if (provider && !modelId) {
+    throw new Error(`Provider "${provider}" specified but modelId is missing. Both provider and modelId must be specified together.`);
+  }
+  if (!provider && modelId) {
+    throw new Error(`Model "${modelId}" specified but provider is missing. Both provider and modelId must be specified together.`);
+  }
+
   const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
+  if (provider && modelId && !explicitModel) {
+    throw new Error(`Model "${modelId}" not found for provider "${provider}".`);
+  }
+
   return explicitModel ?? modelRegistry.getAvailable()[0];
 };
 
@@ -101,13 +128,14 @@ const createBaseSession = async (
   const authStorage = AuthStorage.create();
   const modelRegistry = new ModelRegistry(authStorage);
 
-  // Load resource loader with extensions from PI_CODING_AGENT_DIR
-  // This also flushes pending provider registrations to the ModelRegistry
+  // Load resource loader with extensions from PI_CODING_AGENT_DIR and the
+  // bundled open-hax provider extension. This also flushes provider
+  // registrations to the ModelRegistry before model selection.
   const resourceLoader = await createResourceLoader(systemPrompt, cwd, modelRegistry);
 
   const model = selectModel(modelRegistry, provider, modelId);
   if (!model) {
-    throw new Error("No authenticated pi model is available for eta-mu");
+    throw new Error("No authenticated pi model is available for eta-mu. Set one of: OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN, OPEN_HAX_PROXY_AUTH_TOKEN, or OPEN_HAX_AUTH_TOKEN.");
   }
 
   const settingsManager = SettingsManager.inMemory({
