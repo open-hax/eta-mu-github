@@ -1,15 +1,21 @@
 import {
   AuthStorage,
   createAgentSession,
-  createExtensionRuntime,
-  createEventBus,
+  createBashTool,
+  createEditTool,
+  createReadTool,
+  createWriteTool,
+  discoverAndLoadExtensions,
   ModelRegistry,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
   type ExtensionAPI,
-  type ExecResult,
+  type ExtensionRuntime,
+  type ProviderConfig,
 } from "@mariozechner/pi-coding-agent";
+import path from "node:path";
+import fs from "node:fs";
 import openHaxProvider from "./extensions/open-hax-provider.js";
 
 const extractJson = (text: string): string => {
@@ -21,77 +27,69 @@ const extractJson = (text: string): string => {
   return text.slice(start, end + 1);
 };
 
-export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: string, provider?: string, modelId?: string): Promise<string> => {
-  const authStorage = AuthStorage.create();
-  const modelRegistry = new ModelRegistry(authStorage);
+const getAgentDir = (): string | undefined => {
+  const explicit = process.env.PI_CODING_AGENT_DIR;
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+  // Fallback: ~/.pi/agent
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (home) {
+    const defaultDir = path.join(home, ".pi", "agent");
+    if (fs.existsSync(defaultDir)) {
+      return defaultDir;
+    }
+  }
+  return undefined;
+};
 
-  // Create the extension runtime
-  const extensionRuntime = createExtensionRuntime();
-
-  // Create a minimal ExtensionAPI that delegates to the runtime's registerProvider
-  const pi: ExtensionAPI = {
-    on: () => {},
-    registerTool: () => {},
-    registerCommand: () => {},
-    registerShortcut: () => {},
-    registerFlag: () => {},
-    registerMessageRenderer: () => {},
-    registerProvider: (name, config) => {
-      extensionRuntime.registerProvider(name, config);
+const registerBundledProviders = (runtime: ExtensionRuntime): void => {
+  const providerRegistrationApi = {
+    registerProvider: (name: string, config: ProviderConfig) => {
+      runtime.registerProvider(name, config);
     },
-    unregisterProvider: (name) => {
-      extensionRuntime.unregisterProvider(name);
-    },
-    getFlag: () => undefined,
-    sendMessage: () => {},
-    sendUserMessage: () => {},
-    appendEntry: () => {},
-    setSessionName: () => {},
-    getSessionName: () => undefined,
-    setLabel: () => {},
-    getActiveTools: () => [],
-    getAllTools: () => [],
-    setActiveTools: () => {},
-    getCommands: () => [],
-    setModel: () => Promise.resolve(false),
-    getThinkingLevel: () => "medium",
-    setThinkingLevel: () => {},
-    exec: () => Promise.resolve({ cwd: "", exitCode: 1, code: 1, killed: false, stdout: "", stderr: "exec not available in eta-mu context" } as ExecResult),
-    events: createEventBus(),
-  };
+  } as unknown as ExtensionAPI;
 
-  // Load the open-hax provider extension
-  openHaxProvider(pi);
+  openHaxProvider(providerRegistrationApi);
+};
 
-  // Register providers from the extension's pending registrations
-  for (const { name, config } of extensionRuntime.pendingProviderRegistrations) {
+const flushProviderRegistrations = (runtime: ExtensionRuntime, modelRegistry: ModelRegistry): void => {
+  const pending = runtime.pendingProviderRegistrations ?? [];
+  for (const { name, config } of pending) {
     modelRegistry.registerProvider(name, config);
   }
+  runtime.pendingProviderRegistrations = [];
+};
 
-  // Now try to find the model - the extension will have registered the providers
-  // Provider and modelId must be specified together; reject partial specification
-  if (provider && !modelId) {
-    throw new Error(`Provider "${provider}" specified but modelId is missing. Both provider and modelId must be specified together.`);
-  }
-  if (!provider && modelId) {
-    throw new Error(`Model "${modelId}" specified but provider is missing. Both provider and modelId must be specified together.`);
-  }
-  
-  const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
-  
-  // If explicit provider/model was requested but not found, error immediately
-  if (provider && modelId && !explicitModel) {
-    throw new Error(`Model "${modelId}" not found for provider "${provider}". Available providers: open-hax, open-hax-completions, open-hax-compat, open-hax-responses.`);
-  }
-  
-  // If no explicit model, fall back to first available
-  const model = explicitModel ?? modelRegistry.getAvailable()[0];
-  if (!model) {
-    throw new Error("No authenticated pi model is available for eta-mu. Set one of: OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN, OPEN_HAX_PROXY_AUTH_TOKEN, or OPEN_HAX_AUTH_TOKEN.");
+const createResourceLoader = async (
+  systemPrompt: string,
+  cwd: string,
+  modelRegistry: ModelRegistry,
+): Promise<ResourceLoader> => {
+  const agentDir = getAgentDir();
+
+  // Load extensions from the configured/global agent directory. The returned
+  // runtime queues provider registrations until we can flush them into the
+  // concrete ModelRegistry used by this GitHub automation session.
+  const extensionsResult = await discoverAndLoadExtensions(
+    [],
+    cwd,
+    agentDir,
+    undefined,
+  );
+  const { extensions, errors, runtime } = extensionsResult;
+
+  if (errors.length > 0) {
+    for (const { path, error } of errors) {
+      console.error(`eta-mu extension error (${path}): ${error}`);
+    }
   }
 
-  const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: extensionRuntime }),
+  registerBundledProviders(runtime);
+  flushProviderRegistrations(runtime, modelRegistry);
+
+  return {
+    getExtensions: () => ({ extensions, errors, runtime }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -102,26 +100,72 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
     extendResources: () => {},
     reload: async () => {},
   };
+};
+
+const selectModel = (modelRegistry: ModelRegistry, provider?: string, modelId?: string) => {
+  if (provider && !modelId) {
+    throw new Error(`Provider "${provider}" specified but modelId is missing. Both provider and modelId must be specified together.`);
+  }
+  if (!provider && modelId) {
+    throw new Error(`Model "${modelId}" specified but provider is missing. Both provider and modelId must be specified together.`);
+  }
+
+  const explicitModel = provider && modelId ? modelRegistry.find(provider, modelId) : undefined;
+  if (provider && modelId && !explicitModel) {
+    throw new Error(`Model "${modelId}" not found for provider "${provider}".`);
+  }
+
+  return explicitModel ?? modelRegistry.getAvailable()[0];
+};
+
+const createBaseSession = async (
+  cwd: string,
+  systemPrompt: string,
+  tools: any[],
+  provider?: string,
+  modelId?: string,
+) => {
+  const authStorage = AuthStorage.create();
+  const modelRegistry = new ModelRegistry(authStorage);
+
+  // Load resource loader with extensions from PI_CODING_AGENT_DIR and the
+  // bundled open-hax provider extension. This also flushes provider
+  // registrations to the ModelRegistry before model selection.
+  const resourceLoader = await createResourceLoader(systemPrompt, cwd, modelRegistry);
+
+  const model = selectModel(modelRegistry, provider, modelId);
+  if (!model) {
+    throw new Error("No authenticated pi model is available for eta-mu. Set one of: OPEN_HAX_OPENAI_PROXY_AUTH_TOKEN, OPEN_HAX_PROXY_AUTH_TOKEN, or OPEN_HAX_AUTH_TOKEN.");
+  }
 
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: true, maxRetries: 1 },
   });
 
-  const { session } = await createAgentSession({
+  return createAgentSession({
     cwd,
     model,
-    thinkingLevel: "low",
+    thinkingLevel: tools.length > 0 ? "medium" : "low",
     authStorage,
     modelRegistry,
     resourceLoader,
-    tools: [],
+    tools,
     sessionManager: SessionManager.inMemory(),
     settingsManager,
   });
+};
 
+export const runEtaMuPrompt = async (
+  cwd: string,
+  systemPrompt: string,
+  prompt: string,
+  provider?: string,
+  modelId?: string,
+): Promise<string> => {
+  const { session } = await createBaseSession(cwd, systemPrompt, [], provider, modelId);
   let output = "";
-  session.subscribe((event) => {
+  session.subscribe((event: any) => {
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       output += event.assistantMessageEvent.delta;
     }
@@ -130,6 +174,35 @@ export const runEtaMuPrompt = async (cwd: string, systemPrompt: string, prompt: 
   try {
     await session.prompt(prompt);
     return extractJson(output.trim());
+  } finally {
+    session.dispose();
+  }
+};
+
+export const runEtaMuAutofix = async (
+  cwd: string,
+  systemPrompt: string,
+  prompt: string,
+  provider?: string,
+  modelId?: string,
+): Promise<string> => {
+  const tools = [
+    createReadTool(cwd),
+    createEditTool(cwd),
+    createWriteTool(cwd),
+    createBashTool(cwd),
+  ];
+  const { session } = await createBaseSession(cwd, systemPrompt, tools, provider, modelId);
+  let output = "";
+  session.subscribe((event: any) => {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      output += event.assistantMessageEvent.delta;
+    }
+  });
+
+  try {
+    await session.prompt(prompt);
+    return output.trim();
   } finally {
     session.dispose();
   }

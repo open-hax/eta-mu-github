@@ -1,13 +1,26 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import { loadConfig } from "./config.js";
 import { classifyGithubEvent } from "./event-classifier.js";
-import { createGitHubClient, createIssueComment, fetchEventContext, parseRepoSlug, upsertStickyComment } from "./github.js";
+import {
+  createGitHubClient,
+  createIssueComment,
+  fetchEventContext,
+  formatReviewGateOutput,
+  parseRepoSlug,
+  publishCheckRun,
+  upsertStickyComment,
+} from "./github.js";
+import { runAutofixForEvent } from "./autofix.js";
 import { runEtaMuPrompt } from "./pi-agent.js";
 import { findTrackedUnresolvedThreads } from "./review-gate.js";
-import type { EtaMuAgentDecision } from "./types.js";
+import type { AutofixResult, EtaMuAgentDecision } from "./types.js";
 import { readFile } from "node:fs/promises";
 
-const usage = `eta-mu commands:\n  eta-mu review-gate --repo owner/repo --pr 123\n  eta-mu classify-event --repo owner/repo --event-name issue_comment --event-path /tmp/event.json\n  eta-mu run-event --repo owner/repo --event-name issue_comment --event-path /tmp/event.json --cwd /checkout/path [--dry-run]`;
+const usage = `eta-mu commands:
+  eta-mu review-gate --repo owner/repo --pr 123 [--publish-check] [--check-name eta-mu-review-gate] [--head-sha <sha>]
+  eta-mu classify-event --repo owner/repo --event-name issue_comment --event-path /tmp/event.json
+  eta-mu run-event --repo owner/repo --event-name issue_comment --event-path /tmp/event.json --cwd /checkout/path [--dry-run]`;
 
 const requireArg = (name: string, value: string | undefined): string => {
   if (!value) throw new Error(`Missing required argument ${name}`);
@@ -28,21 +41,33 @@ const parseDecision = (value: string): EtaMuAgentDecision => {
   if (parsed.shouldRespond !== true) {
     return { shouldRespond: false, mode: "noop", body: "" };
   }
-  if ((parsed.mode !== "reply" && parsed.mode !== "upsert-state") || typeof parsed.body !== "string") {
+  if ((parsed.mode !== "reply" && parsed.mode !== "upsert-state" && parsed.mode !== "autofix") || typeof parsed.body !== "string") {
     throw new Error(`Invalid eta-mu response payload: ${value}`);
   }
   return { shouldRespond: true, mode: parsed.mode, body: parsed.body };
 };
 
 const buildSystemPrompt = (): string => [
-  "You are eta-mu, a concise GitHub coordination bot built on pi.",
-  "You comment as a collaborator between humans, review bots, and code review agents.",
+  "You are eta-mu, an elite GitHub coordination bot built on pi.",
+  "You collaborate with humans, CodeRabbit, Codex-like review agents, and other automated reviewers.",
   "Never invent repository facts.",
-  "Prefer short, actionable markdown.",
-  "Return JSON only with shape {\"shouldRespond\":boolean,\"mode\":\"reply\"|\"upsert-state\"|\"noop\",\"body\":string}.",
+  "Prefer concise markdown when speaking to humans.",
+  "Return JSON only with shape {\"shouldRespond\":boolean,\"mode\":\"reply\"|\"upsert-state\"|\"autofix\"|\"noop\",\"body\":string}.",
+  "Use mode=reply for a direct human-facing comment.",
+  "Use mode=upsert-state for a sticky status comment that should replace eta-mu's prior state note.",
+  "Use mode=autofix only when the current PR should be changed automatically; in that mode body must be a terse implementation brief for the fixer, not a user-facing comment.",
+  "Use mode=noop when eta-mu should remain silent.",
 ].join("\n");
 
 const buildPrompt = (context: string): string => `${context}\n\nReturn JSON only.`;
+
+const formatAutofixComment = (result: AutofixResult): string => {
+  const lines = ["## eta-mu autofix", "", `- status: ${result.pushed ? "pushed" : result.applied ? "applied" : "no-change"}`, `- reason: ${result.reason}`];
+  if (result.commitSha) lines.push(`- commit: \`${result.commitSha}\``);
+  if (result.changedFiles.length > 0) lines.push(`- changed files: ${result.changedFiles.map((file) => `\`${file}\``).join(", ")}`);
+  if (result.summary) lines.push("", "<details><summary>eta-mu summary</summary>", "", result.summary, "", "</details>");
+  return lines.join("\n");
+};
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
@@ -66,12 +91,23 @@ const main = async (): Promise<void> => {
       debounceKey: `${repo.owner}/${repo.name}:pr:${pr}`,
     }, {});
     const result = findTrackedUnresolvedThreads(context.unresolvedReviewThreads ?? [], config.reviewActors);
+    const output = formatReviewGateOutput(result);
+    const checkName = getArg(args, "--check-name") ?? config.reviewCheckName;
+    const headSha = getArg(args, "--head-sha") ?? context.pullRequestHead?.sha;
+
     console.log(JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       pullRequestNumber: pr,
       trackedActors: result.trackedActors,
       unresolvedThreads: result.unresolvedThreads.length,
+      reviewCheckName: checkName,
     }, null, 2));
+
+    if (hasFlag(args, "--publish-check")) {
+      if (!headSha) throw new Error("--publish-check requires a head SHA (pass --head-sha or run on a PR event)");
+      await publishCheckRun(octokit, repo, headSha, checkName, output);
+    }
+
     if (result.unresolvedThreads.length > 0) {
       throw new Error(`Unresolved tracked review threads: ${result.unresolvedThreads.length}`);
     }
@@ -116,7 +152,12 @@ const main = async (): Promise<void> => {
       throw new Error("No issue or pull request number available for commenting");
     }
     if (decision.mode === "upsert-state") {
-      await upsertStickyComment(octokit, repo, targetIssue, "<!-- eta-mu:state -->", decision.body);
+      await upsertStickyComment(octokit, repo, targetIssue, config.stateCommentMarker, decision.body);
+      return;
+    }
+    if (decision.mode === "autofix") {
+      const result = await runAutofixForEvent(repo, context, decision.body, config, token);
+      await upsertStickyComment(octokit, repo, targetIssue, config.autofixCommentMarker, formatAutofixComment(result));
       return;
     }
     await createIssueComment(octokit, repo, targetIssue, decision.body);
